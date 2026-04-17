@@ -7,99 +7,138 @@ from pydantic import BaseModel
 from typing import List, Tuple
 import torch.nn.functional as F
 
-# Import your classes from the local file
-from enode import TwoTowerModel, UserTower, MovieTower, VocabBuilder
+# Directly importing from your enode.py
+from enode import VocabBuilder
 
-app = FastAPI(title="DeepCut Pi-Engine")
+# --- ARCHITECTURE RE-DEFINITION ---
+# These must match your training code exactly
+import torch.nn as nn
 
-# 1. Define the Input Schema
-# Expected format: {"username": "risham", "ratings": [(101, 4.5), (202, 5.0)]}
-class Rating(BaseModel):
-    movie_id: int
-    rating: float
+class UserTower(nn.Module):
+    def __init__(self, num_users, num_languages):
+        super().__init__()
+        self.user_emb = nn.Embedding(num_users, 64)
+        self.lang_emb = nn.Embedding(num_languages, 32)
+        self.network = nn.Sequential(nn.Linear(64 + 32 + 2, 128), nn.ReLU(), nn.Linear(128, 128))
+    def forward(self, user_ids, lang_ids, stats):
+        u = self.user_emb(user_ids)
+        l = self.lang_emb(lang_ids)
+        x = torch.cat([u, l, stats], dim=1)
+        return self.network(x)
+
+class MovieTower(nn.Module):
+    def __init__(self, num_movies, num_languages, num_content_types, num_genres):
+        super().__init__()
+        self.movie_emb = nn.Embedding(num_movies, 64)
+        self.lang_emb = nn.Embedding(num_languages, 32)
+        self.type_emb = nn.Embedding(num_content_types, 16)
+        # Input: 64 (ID) + 32 (Lang) + 16 (Type) + num_genres (Multi-hot) + 3 (Stats)
+        input_dim = 64 + 32 + 16 + num_genres + 3
+        self.network = nn.Sequential(nn.Linear(input_dim, 128), nn.ReLU(), nn.Linear(128, 128))
+    def forward(self, movie_ids, lang_ids, type_ids, genres, stats):
+        m = self.movie_emb(movie_ids)
+        l = self.lang_emb(lang_ids)
+        t = self.type_emb(type_ids)
+        x = torch.cat([m, l, t, genres, stats], dim=1)
+        return self.network(x)
+
+class TwoTowerModel(nn.Module):
+    def __init__(self, user_tower, movie_tower):
+        super().__init__()
+        self.user_tower = user_tower
+        self.movie_tower = movie_tower
+
+# --- API IMPLEMENTATION ---
+
+app = FastAPI()
 
 class RecRequest(BaseModel):
     username: str
-    ratings: List[Tuple[int, float]]
+    ratings: List[Tuple[int, float]] # [(movie_id, rating), ...]
 
-# Global assets
+# Global state
 model = None
 vocab = None
 movie_db = None
-movie_embeddings = None
+movie_embs = None
 device = torch.device("cpu")
 
 @app.on_event("startup")
-def load_assets():
-    global model, vocab, movie_db, movie_embeddings
-    print("🚀 Initializing DeepCut on Pi 4...")
+def startup():
+    global model, vocab, movie_db, movie_embs
+    print("Loading assets...")
     
     with open("vocab.pkl", "rb") as f:
         vocab = pickle.load(f)
     
     movie_db = pd.read_parquet("movies.parquet")
     
-    # Initialize Model (Matching your 114-dim architecture)
-    user_tower = UserTower(num_users=vocab.num_users, num_languages=vocab.num_languages)
-    movie_tower = MovieTower(
-        num_movies=vocab.num_movies, 
-        num_languages=vocab.num_languages,
-        num_content_types=vocab.num_content_types,
-        num_genres=vocab.num_genres
-    )
-    model = TwoTowerModel(user_tower, movie_tower).to(device)
+    # Init Model
+    u_tower = UserTower(vocab.num_users, vocab.num_languages)
+    m_tower = MovieTower(vocab.num_movies, vocab.num_languages, vocab.num_content_types, vocab.num_genres)
+    model = TwoTowerModel(u_tower, m_tower)
     model.load_state_dict(torch.load("best_two_tower.pt", map_location=device))
     model.eval()
 
-    # Pre-compute all movie embeddings once to save Pi's CPU cycles during requests
-    print("📦 Pre-computing movie library embeddings...")
-    # (Assuming you have a helper in enode to get all movie features)
-    # movie_embeddings = engine.compute_all_movie_vectors() 
-    
-    torch.set_num_threads(4)
-    print("✅ Pi is ready for requests.")
+    print("Pre-computing movie library embeddings...")
+    with torch.no_grad():
+        # Encode all movies in the DB for fast lookup
+        m_ids = torch.tensor(vocab.movie_encoder.transform(movie_db["movie_id"]))
+        l_ids = torch.tensor(vocab.safe_encode(vocab.language_encoder, movie_db["original_language"].fillna("unknown")))
+        t_ids = torch.tensor(vocab.safe_encode(vocab.content_type_encoder, movie_db["content_type"].fillna("unknown")))
+        
+        # Build Genre Multi-hot Matrix
+        g_list = [vocab.encode_genres_multihot(g) for g in movie_db["genres"]]
+        genres_tensor = torch.tensor(np.stack(g_list))
+        
+        # Stats (Scaled Popularity, Runtime, Year)
+        stats = torch.tensor(movie_db[["popularity_scaled", "runtime_scaled", "year_scaled"]].values.astype(np.float32))
+        
+        movie_embs = model.movie_tower(m_ids, l_ids, t_ids, genres_tensor, stats)
+        # Normalize for Cosine Similarity
+        movie_embs = F.normalize(movie_embs, p=2, dim=1)
 
 @app.post("/recommend")
-async def get_recommendations(data: RecRequest):
-    try:
-        # 1. Filter out movies not in our vocabulary
-        valid_ratings = []
-        known_movie_ids = set(vocab.movie_encoder.classes_)
+async def recommend(req: RecRequest):
+    # 1. Filter known movies
+    known_ids = set(vocab.movie_encoder.classes_)
+    valid_data = [(m, r) for m, r in req.ratings if m in known_ids]
+    
+    if not valid_data:
+        return {"error": "No recognizable movies in input."}
+
+    # 2. Build Mock User Vector from their liked movies
+    # We aggregate the embeddings of their top-rated movies to represent their 'taste'
+    with torch.no_grad():
+        # Get indices of the movies they provided
+        movie_indices = [np.where(movie_db["movie_id"] == m_id)[0][0] for m_id, r in valid_data if r >= 4.0]
         
-        for m_id, rating in data.ratings:
-            if m_id in known_movie_ids:
-                valid_ratings.append((m_id, rating))
+        if not movie_indices: # Fallback if they didn't rate anything highly
+            movie_indices = [np.where(movie_db["movie_id"] == m_id)[0][0] for m_id, r in valid_data]
+
+        user_taste = movie_embs[movie_indices].mean(dim=0, keepdim=True)
+        user_taste = F.normalize(user_taste, p=2, dim=1)
+
+        # 3. Similarity Search
+        scores = torch.matmul(user_taste, movie_embs.T).squeeze(0)
         
-        if not valid_ratings:
-            return {"status": "error", "message": "No known movies found in input."}
+        # 4. Filter out movies they've already seen
+        seen_ids = [m_id for m_id, r in req.ratings]
+        scores[movie_db["movie_id"].isin(seen_ids)] = -1.0
+        
+        # 5. Get Top 10
+        top_v, top_i = torch.topk(scores, k=10)
+        
+        results = []
+        for i, score in zip(top_i.tolist(), top_v.tolist()):
+            row = movie_db.iloc[i]
+            results.append({
+                "movie_id": int(row["movie_id"]),
+                "title": row["title"],
+                "score": round(score, 4)
+            })
 
-        # 2. Aggregate User Profile
-        # We simulate the User Tower input by averaging the embeddings 
-        # of the movies the user liked (weighted by rating)
-        with torch.no_grad():
-            # This is a simplified "Average Taste" approach for inference
-            # In a production Two-Tower, you'd pass user-specific stats
-            # Here we just find movies similar to their high-rated ones
-            user_vector = torch.randn(1, 128) # Placeholder for the 128-dim embedding
-            
-            # 3. Calculate Scores (Cosine Similarity)
-            # scores = torch.matmul(user_vector, movie_embeddings.T)
-            # top_k_indices = torch.topk(scores, k=10).indices
-            
-            # Mocking the return for testing
-            recommendations = [
-                {"title": "The Matrix", "year": 1999, "score": 0.98},
-                {"title": "Inception", "year": 2010, "score": 0.95}
-            ]
-
-        return {
-            "username": data.username,
-            "recommendations": recommendations,
-            "processed_count": len(valid_ratings)
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return {"username": req.username, "recommendations": results}
 
 if __name__ == "__main__":
     import uvicorn
