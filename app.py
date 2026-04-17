@@ -85,7 +85,8 @@ async def get_recommendations(data: UserHistory):
             'preferred_language': history_movies['original_language'].mode()[0] if not history_movies.empty else 'en'
         }
 
-        recs = engine.recommend_from_history(
+        # CHANGE THIS LINE to use .recommend()
+        recs = engine.recommend(
             user_id="anonymous_user", 
             user_features=user_features, 
             top_k=data.top_k,
