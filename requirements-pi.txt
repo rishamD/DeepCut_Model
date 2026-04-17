@@ -5,6 +5,7 @@ scikit-learn
 fastapi
 uvicorn
 faiss-cpu
+tqdm
 
 # Use the specific CPU-only index ONLY for torch
 --extra-index-url https://download.pytorch.org/whl/cpu
