@@ -1,16 +1,11 @@
-# Use the official PyTorch CPU wheel index
---index-url https://download.pytorch.org/whl/cpu
-
-# Core ML and Data
-torch
+# Use the default library for everything
 pandas
 pyarrow
 scikit-learn
-numpy
-
-# Fast API for the "Zero-Cost" Server
 fastapi
 uvicorn
-
-# Vector Search (Optimization for Pi)
 faiss-cpu
+
+# Use the specific CPU-only index ONLY for torch
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
