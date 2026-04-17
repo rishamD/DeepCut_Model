@@ -1,0 +1,16 @@
+# Use the official PyTorch CPU wheel index
+--index-url https://download.pytorch.org/whl/cpu
+
+# Core ML and Data
+torch
+pandas
+pyarrow
+scikit-learn
+numpy
+
+# Fast API for the "Zero-Cost" Server
+fastapi
+uvicorn
+
+# Vector Search (Optimization for Pi)
+faiss-cpu
