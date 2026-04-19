@@ -72,20 +72,36 @@ async def get_recommendations(data: UserHistory):
         raise HTTPException(status_code=503, detail="Model not initialized")
     
     try:
-        watched_ids = list(data.history.keys())
+        # 1. FILTER: Ignore movies that aren't in our training vocabulary
+        # This prevents KeyErrors inside the User Tower
+        known_history = {
+            m_id: rating for m_id, rating in data.history.items() 
+            if m_id in vocab.movie_to_idx
+        }
+        
+        # Identify what we dropped for the warning message
+        ignored_movies = list(set(data.history.keys()) - set(known_history.keys()))
+        
+        if not known_history:
+            return {
+                "recommendations": [], 
+                "warning": "None of the movies provided exist in the model's vocabulary.",
+                "ignored": ignored_movies
+            }
+
+        # 2. Sync with Movie Database for feature extraction
+        watched_ids = list(known_history.keys())
         history_movies = movie_db[movie_db['movie_id'].isin(watched_ids)]
         
-        if history_movies.empty:
-            return {"recommendations": [], "warning": "No movies found in database"}
-
+        # 3. Feature Aggregation (using only known movies)
         user_features = {
-            'avg_rating': (sum(data.history.values()) / len(data.history)) / 5.0,
-            'num_ratings': len(data.history),
-            'avg_popularity': history_movies['popularity_scaled'].mean(),
+            'avg_rating': (sum(known_history.values()) / len(known_history)) / 5.0,
+            'num_ratings': len(known_history),
+            'avg_popularity': history_movies['popularity_scaled'].mean() if not history_movies.empty else 0.5,
             'preferred_language': history_movies['original_language'].mode()[0] if not history_movies.empty else 'en'
         }
 
-        # CHANGE THIS LINE to use .recommend()
+        # 4. Generate Recommendations
         recs = engine.recommend(
             user_id="anonymous_user", 
             user_features=user_features, 
@@ -93,6 +109,12 @@ async def get_recommendations(data: UserHistory):
             exclude_seen=watched_ids
         )
         
-        return {"recommendations": recs}
+        response = {"recommendations": recs}
+        if ignored_movies:
+            response["warning"] = f"Ignored {len(ignored_movies)} unknown movies."
+            response["ignored_ids"] = ignored_movies
+            
+        return response
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
