@@ -76,7 +76,7 @@ async def get_recommendations(data: UserHistory):
         # This prevents KeyErrors inside the User Tower
         known_history = {
             m_id: rating for m_id, rating in data.history.items() 
-            if m_id in vocab.movie_to_idx
+            if m_id in vocab.movie_encoder.classes_
         }
         
         # Identify what we dropped for the warning message
