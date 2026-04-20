@@ -109,56 +109,56 @@ def startup():
 # --- RECOMMENDATION ENDPOINT ---
 @app.post("/recommend")
 async def get_recommendations(data: UserHistory):
-    if not engine:
-        raise HTTPException(status_code=503, detail="Model initializing")
-    
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         now = datetime.now()
 
-        # history_for_model will store {movie_id: rating} for valid vocab matches
-        history_for_model = {}
-        watched_ids = []
+        # 1. FETCH HISTORICAL REVIEWS FROM DB
+        cursor.execute("SELECT movie_id, rating_val FROM reviews WHERE user_id = ?", (data.username,))
+        rows = cursor.fetchall()
+        
+        # history_for_model will store ALL reviews (old from DB + new from Request)
+        # We use a dict so new reviews can overwrite old ones if the ID is the same
+        all_history = {row[0]: float(row[1]) for row in rows}
 
-        # 1. PROCESS INCOMING REVIEWS
+        # 2. PROCESS NEW INCOMING REVIEWS
         for review in data.reviews:
-            m_id = review.slug  # Slug is treated as our movie_id
-            watched_ids.append(m_id)
+            m_id = review.slug
             
-            # Save review to SQLite
+            # Save the new review to the database
             cursor.execute(
                 "INSERT INTO reviews (movie_id, user_id, rating_val, timestamp) VALUES (?, ?, ?, ?)",
                 (m_id, data.username, int(review.rating), now)
             )
             
-            # Capture metadata for movies not in our master Parquet
+            # Capture metadata for unknown movies
             if m_id not in movie_db:
                 cursor.execute(
                     "INSERT OR IGNORE INTO unknown_movies (movie_id, title, slug, added_at) VALUES (?, ?, ?, ?)",
                     (m_id, review.title, review.slug, now)
                 )
             
-            # Filter for model input (must exist in training vocabulary)
-            if m_id in vocab.movie_encoder.classes_:
-                history_for_model[m_id] = review.rating
+            # Add/Update in our local history dictionary
+            all_history[m_id] = review.rating
 
         conn.commit()
         conn.close()
 
-        # 2. ABORT IF NO USABLE DATA FOR INFERENCE
-        if not history_for_model:
-            return {
-                "recommendations": [], 
-                "warning": "None of the provided movies are in the model's training vocabulary."
-            }
+        # 3. FILTER FOR MODEL (Must be in training vocab)
+        known_history = {
+            m_id: rating for m_id, rating in all_history.items() 
+            if m_id in vocab.movie_encoder.classes_
+        }
+        
+        if not known_history:
+            return {"recommendations": [], "warning": "User has no history in model vocabulary."}
 
-        # 3. FEATURE EXTRACTION FOR USER TOWER
-        # Retrieve metadata for only the known movies to calculate taste vector
-        history_metadata = [movie_db[m_id] for m_id in history_for_model.keys() if m_id in movie_db]
+        # 4. FEATURE EXTRACTION (Based on FULL merged history)
+        watched_ids = list(all_history.keys())
+        history_metadata = [movie_db[m_id] for m_id in known_history.keys() if m_id in movie_db]
         
         if not history_metadata:
-            # Safe defaults if no metadata is available for history
             user_features = {'avg_rating': 0.5, 'num_ratings': 0, 'avg_popularity': 0.5, 'preferred_language': 'en'}
         else:
             avg_pop = sum(m.get('popularity_scaled', 0.5) for m in history_metadata) / len(history_metadata)
@@ -166,21 +166,21 @@ async def get_recommendations(data: UserHistory):
             pref_lang = max(set(langs), key=langs.count)
             
             user_features = {
-                'avg_rating': (sum(history_for_model.values()) / len(history_for_model)) / 5.0,
-                'num_ratings': len(history_for_model),
+                'avg_rating': (sum(known_history.values()) / len(known_history)) / 5.0,
+                'num_ratings': len(known_history),
                 'avg_popularity': avg_pop,
                 'preferred_language': pref_lang
             }
 
-        # 4. RUN INFERENCE
+        # 5. GENERATE RECS (Model now sees all 12 movies)
         recs = engine.recommend(
             user_id=data.username, 
             user_features=user_features, 
             top_k=data.top_k,
-            exclude_seen=watched_ids
+            exclude_seen=watched_ids # Filters out all 12 movies
         )
         
-        # 5. ENRICH RESPONSE WITH PARQUET METADATA
+        # 6. ENRICH RESULTS
         enriched_recs = []
         for r in recs:
             rec_id = r['movie_id']
@@ -196,7 +196,7 @@ async def get_recommendations(data: UserHistory):
         return {"recommendations": enriched_recs}
 
     except Exception as e:
-        print(f"❌ Error during recommendation: {e}")
+        print(f"❌ Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
