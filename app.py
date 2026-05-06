@@ -12,10 +12,10 @@ from pydantic import BaseModel
 from typing import List
 from datetime import datetime
 
-from twoTowerModel import TwoTowerModel, UserTower, MovieTower
-from infer import RecommendationEngine
-from preProcess import preprocess_movies
-from enode import VocabBuilder
+from model.twoTowerModel import TwoTowerModel, UserTower, MovieTower
+from model.infer import RecommendationEngine
+from model.preProcess import preprocess_movies
+from model.enode import VocabBuilder
 
 # --- DATA MODELS ---
 class MovieReview(BaseModel):
@@ -104,7 +104,7 @@ async def lifespan(app: FastAPI):
 
     # 4. Load movie metadata
     print("📦 Loading movie metadata from Parquet...")
-    raw_df = pd.read_parquet("movies.parquet")
+    raw_df = pd.read_parquet("data/movies.parquet")
     movie_db = raw_df.set_index("movie_id").to_dict("index")
     processed_df = preprocess_movies(raw_df, fit=False)
 

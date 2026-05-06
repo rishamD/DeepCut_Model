@@ -7,10 +7,10 @@ import time
 from torch.utils.data import DataLoader, Dataset, random_split
 from tqdm import tqdm
 
-from preProcess import preprocess_movies, preprocess_ratings, build_user_features
-from enode import VocabBuilder
-from twoTowerModel import TwoTowerModel, UserTower, MovieTower
-from trainingLoop import train
+from model.preProcess import preprocess_movies, preprocess_ratings, build_user_features
+from model.enode import VocabBuilder
+from model.twoTowerModel import TwoTowerModel, UserTower, MovieTower
+from model.trainingLoop import train
 
 
 class MovieRatingDataset(Dataset):
@@ -167,8 +167,8 @@ def main():
     # ── 1. Load Raw Data ──────────────────────────────────────────────────
     overall.set_description("📦 Loading data")
     t = time.time()
-    movies_df = pd.read_parquet("movies.parquet")
-    ratings_df = pd.read_parquet("ratings.parquet")
+    movies_df = pd.read_parquet("data/movies.parquet")
+    ratings_df = pd.read_parquet("data/ratings.parquet")
     tqdm.write(
         f"   ✅ Movies: {len(movies_df):,} | Ratings: {len(ratings_df):,} | "
         f"{time.time()-t:.1f}s"

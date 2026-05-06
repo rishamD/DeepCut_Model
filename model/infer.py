@@ -4,8 +4,8 @@ import numpy as np
 import faiss
 from tqdm import tqdm
 from typing import List, Dict
-from twoTowerModel import TwoTowerModel
-from enode import VocabBuilder
+from model.twoTowerModel import TwoTowerModel
+from model.enode import VocabBuilder
 
 
 class RecommendationEngine:

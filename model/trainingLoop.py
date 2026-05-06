@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from twoTowerModel import TwoTowerModel
+from model.twoTowerModel import TwoTowerModel
 
 
 def train(
