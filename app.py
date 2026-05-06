@@ -71,7 +71,7 @@ async def lifespan(app: FastAPI):
 
     # 1. Load VocabBuilder
     with open("vocab.pkl", "rb") as f:
-        vocab: VocabBuilder = pickle.load(f)
+        vocab = pickle.load(f)
 
     print(
         f"   Vocab: {vocab.num_users} users | "
