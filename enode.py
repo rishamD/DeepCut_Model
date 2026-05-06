@@ -1,7 +1,8 @@
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 import numpy as np
+
 
 class VocabBuilder:
     def __init__(self):
@@ -9,35 +10,42 @@ class VocabBuilder:
         self.movie_encoder = LabelEncoder()
         self.language_encoder = LabelEncoder()
         self.genre_vocab: Dict[str, int] = {}
-        self.content_type_encoder = LabelEncoder()
 
-    def fit(self, movies_df: pd.DataFrame, ratings_df: pd.DataFrame):
-        # Fit exactly on the data present during training
+    def fit(
+        self,
+        movies_df: pd.DataFrame,
+        ratings_df: pd.DataFrame,
+        user_features_df: Optional[pd.DataFrame] = None,
+    ):
         self.user_encoder.fit(ratings_df["user_id"])
         self.movie_encoder.fit(movies_df["movie_id"])
-        
-        self.language_encoder.fit(movies_df["original_language"].fillna("unknown"))
-        self.content_type_encoder.fit(movies_df["content_type"].fillna("unknown"))
 
-        # Genre multi-hot vocab
+        movie_langs = movies_df["original_language"].fillna("unknown")
+        if user_features_df is not None:
+            user_langs = user_features_df["preferred_language"].fillna("unknown")
+            all_langs = pd.concat([movie_langs, user_langs]).unique()
+        else:
+            all_langs = movie_langs.unique()
+        self.language_encoder.fit(all_langs)
+
         all_genres = [
             g
             for genres in movies_df["genres"]
             for g in (genres if isinstance(genres, list) else [])
         ]
-        unique_genres = sorted(set(all_genres))
-        self.genre_vocab = {g: i for i, g in enumerate(unique_genres)}
+        self.genre_vocab = {
+            g: i for i, g in enumerate(sorted(set(all_genres)))
+        }
         return self
 
     def safe_encode(self, encoder: LabelEncoder, values: Any) -> np.ndarray:
-        """Maps unseen labels to index 0 to maintain model compatibility."""
-        known_classes = set(encoder.classes_)
-        default_idx = 0 
-        
-        return np.array([
-            encoder.transform([x])[0] if x in known_classes else default_idx 
-            for x in values
-        ])
+        """Maps unseen labels to index 0. Vectorized — no Python loop."""
+        class_to_idx = {c: i for i, c in enumerate(encoder.classes_)}
+        if isinstance(values, pd.Series):
+            return values.map(class_to_idx).fillna(0).values.astype(np.int64)
+        return np.array(
+            [class_to_idx.get(v, 0) for v in values], dtype=np.int64
+        )
 
     def encode_genres_multihot(self, genres: List[str]) -> np.ndarray:
         vec = np.zeros(len(self.genre_vocab), dtype=np.float32)
@@ -56,5 +64,3 @@ class VocabBuilder:
     def num_languages(self): return len(self.language_encoder.classes_)
     @property
     def num_genres(self): return len(self.genre_vocab)
-    @property
-    def num_content_types(self): return len(self.content_type_encoder.classes_)

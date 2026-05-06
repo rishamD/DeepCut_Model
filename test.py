@@ -19,6 +19,7 @@ def recommend_from_history(engine, movies_df, history_dict, top_k=10):
     if history_movies.empty:
         print("❌ Error: None of the movies in your history were found in the database.")
         return []
+    print(history_movies)
 
     # 1. Calculate Aggregated Features
     # Average rating (normalized 0-1)
@@ -63,7 +64,6 @@ def main():
     movie_tower = MovieTower(
         num_movies=vocab.num_movies, 
         num_languages=vocab.num_languages,
-        num_content_types=vocab.num_content_types,
         num_genres=vocab.num_genres
     )
     model = TwoTowerModel(user_tower, movie_tower).to(device)
@@ -98,7 +98,7 @@ def main():
     for i, rec in enumerate(recommendations, 1):
         # Find the title for display
         movie_row = movies_df[movies_df['movie_id'] == rec['movie_id']]
-        title = movie_row['title'].iloc[0] if not movie_row.empty else "Unknown Title"
+        title = movie_row['movie_title'].iloc[0] if not movie_row.empty else "Unknown Title"
         print(f"{i}. {title} (Score: {rec['score']:.4f})")
 
 if __name__ == "__main__":
